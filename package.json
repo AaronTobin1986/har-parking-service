@@ -1,0 +1,15 @@
+{
+  "name": "har-parking-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "שירות ענן: דפדפן headless שממלא את טפסי החניון של האוניברסיטה עבור הר (לגישה מהטלפון).",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "poc": "node poc-login.js",
+    "test-guest": "node test-guest.js"
+  },
+  "dependencies": {
+    "playwright": "1.47.2"
+  }
+}

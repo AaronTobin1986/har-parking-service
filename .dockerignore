@@ -1,0 +1,7 @@
+node_modules
+*.png
+poc-login.js
+test-guest.js
+.env
+.git
+npm-debug.log
