@@ -4,7 +4,7 @@
 // אימות: כותרת Authorization: Bearer <API_TOKEN>  (או שדה token בגוף).
 // משתני סביבה: HUJI_USER, HUJI_PASS, API_TOKEN, PORT (Cloud Run מזריק PORT).
 const http = require('http')
-const { runGuest } = require('./parking')
+const { runGuest, runSearch } = require('./parking')
 
 const PORT = process.env.PORT || 8080
 const API_TOKEN = process.env.API_TOKEN || ''
@@ -38,6 +38,19 @@ function authed(req, body) {
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {})
   if (req.method === 'GET' && req.url === '/') return send(res, 200, { ok: true, service: 'har-parking' })
+
+  if (req.method === 'POST' && req.url === '/guest/search') {
+    const body = await readBody(req)
+    if (!authed(req, body)) return send(res, 401, { ok: false, error: 'unauthorized' })
+    const idNumber = (body.idNumber || '').toString().trim()
+    if (!idNumber) return send(res, 400, { ok: false, error: 'חסר מספר זיהוי' })
+    try {
+      const result = await runSearch(idNumber)
+      return send(res, 200, result)
+    } catch (e) {
+      return send(res, 500, { ok: false, error: String((e && e.message) || e) })
+    }
+  }
 
   if (req.method === 'POST' && (req.url === '/guest/prepare' || req.url === '/guest/confirm')) {
     const body = await readBody(req)

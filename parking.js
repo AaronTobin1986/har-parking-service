@@ -102,4 +102,100 @@ async function runGuest(guest, { save }) {
   }
 }
 
-module.exports = { runGuest }
+// חיפוש רכבים לפי ת"ז: התחברות → מסך "אישורי כניסה לרכב" → מילוי ת"ז → הצגה →
+// גירוד טבלת הרכבים. מחזיר {ok, headers, rows, personName}.
+async function runSearch(idNumber) {
+  const user = process.env.HUJI_USER, pass = process.env.HUJI_PASS
+  if (!user || !pass) throw new Error('חסרים פרטי התחברות (HUJI_USER/HUJI_PASS)')
+  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] })
+  try {
+    const ctx = await browser.newContext({ locale: 'he-IL', timezoneId: 'Asia/Jerusalem', viewport: { width: 1280, height: 950 } })
+    const page = await ctx.newPage()
+    await page.goto(BASE, { waitUntil: 'domcontentloaded', timeout: 45000 })
+    await page.waitForTimeout(1200)
+    if (await page.$('input[name="txtUser"]')) {
+      await page.fill('input[name="txtUser"]', user)
+      await page.fill('input[name="txtPass"]', pass)
+      await Promise.all([page.waitForNavigation({ timeout: 45000 }).catch(() => {}), page.click('input[name="enter"]')])
+      await page.waitForTimeout(2500)
+    }
+    if ((await page.textContent('body') || '').includes('משהו השתבש')) throw new Error('WAF/שגיאת אתר')
+    if (await page.$('input[name="txtUser"]')) throw new Error('ההתחברות נכשלה')
+
+    const searchUrl = await page.evaluate(() => {
+      const els = document.querySelectorAll('a,[onclick],li')
+      for (const e of els) {
+        const t = (e.textContent || '').replace(/\s+/g, ' ').trim()
+        if (t && t.length < 30 && t.replace(/\s+/g, '').indexOf('אישוריכניסהלרכב') >= 0) {
+          const s = (e.getAttribute('onclick') || '') + ' ' + (e.getAttribute('href') || '')
+          const m = s.match(/Navigate(?:Url|Modul)\(\s*['"][^'"]*['"]\s*,\s*['"]([^'"]+)['"]/)
+          if (m) { try { return new URL(m[1], document.baseURI).href } catch (e) { return null } }
+        }
+      }
+      return null
+    })
+    if (!searchUrl) throw new Error('לא נמצא מסך "אישורי כניסה לרכב"')
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45000 })
+    await page.waitForTimeout(1200)
+
+    await page.evaluate((id) => {
+      const ins = Array.prototype.filter.call(document.querySelectorAll('input,textarea'), (e) => e.type !== 'hidden' && e.type !== 'radio' && e.type !== 'checkbox' && e.type !== 'file' && e.getClientRects().length)
+      if (ins[0]) { ins[0].focus(); ins[0].value = id; ['input', 'change', 'blur'].forEach((t) => ins[0].dispatchEvent(new Event(t, { bubbles: true }))) }
+    }, idNumber)
+    await page.waitForTimeout(400)
+
+    const showUrl = await page.evaluate(() => {
+      const els = document.querySelectorAll('a,[onclick],input[type=submit],input[type=button],button')
+      for (const e of els) {
+        const t = ((e.tagName === 'INPUT' ? e.value : e.textContent) || '').trim()
+        if (t === 'הצגה') {
+          const s = (e.getAttribute('onclick') || '') + ' ' + (e.getAttribute('href') || '')
+          const m = s.match(/Navigate(?:Url|Modul)\(\s*['"][^'"]*['"]\s*,\s*['"]([^'"]+)['"]/)
+          if (m) { try { return new URL(m[1], document.baseURI).href } catch (e) { return '__CLICK__' } }
+          return '__CLICK__'
+        }
+      }
+      return null
+    })
+    if (showUrl && showUrl !== '__CLICK__') {
+      await page.goto(showUrl, { waitUntil: 'domcontentloaded', timeout: 45000 })
+    } else if (showUrl === '__CLICK__') {
+      await page.evaluate(() => {
+        const els = document.querySelectorAll('a,[onclick],input[type=submit],input[type=button],button')
+        for (const e of els) { const t = ((e.tagName === 'INPUT' ? e.value : e.textContent) || '').trim(); if (t === 'הצגה') { (e.closest('a,[onclick],button,input') || e).click(); return } }
+      })
+    }
+    await page.waitForTimeout(2500)
+
+    const res = await page.evaluate((wantId) => {
+      const n = (s) => (s || '').replace(/\s+/g, ' ').trim()
+      let personName = ''
+      const body = document.body ? document.body.innerText : ''
+      const digits = (wantId || '').replace(/\D/g, '')
+      if (digits) { const m = body.match(new RegExp(digits + '\\s*[-–]\\s*([^\\n\\r]{1,40})')); if (m) personName = m[1].trim() }
+      const tables = document.querySelectorAll('table')
+      for (let t = 0; t < tables.length; t++) {
+        const tbl = tables[t]
+        if ((tbl.innerText || '').indexOf('מספר רכב') < 0) continue
+        const trs = tbl.querySelectorAll('tr')
+        if (trs.length < 2) continue
+        const headers = Array.prototype.map.call(trs[0].querySelectorAll('th,td'), (c) => n(c.textContent))
+        const rows = []
+        for (let i = 1; i < trs.length && rows.length < 50; i++) {
+          const cells = Array.prototype.map.call(trs[i].querySelectorAll('td'), (c) => n(c.textContent))
+          if (!cells.length || cells.join('') === '') continue
+          const obj = {}
+          cells.forEach((v, j) => { const h = headers[j] || ('col' + j); if (h !== 'בחר') obj[h] = v })
+          rows.push(obj)
+        }
+        if (rows.length) return { headers: headers.filter((h) => h && h !== 'בחר'), rows, personName }
+      }
+      return { headers: [], rows: [], personName }
+    }, idNumber)
+    return { ok: true, ...res }
+  } finally {
+    await browser.close()
+  }
+}
+
+module.exports = { runGuest, runSearch }
